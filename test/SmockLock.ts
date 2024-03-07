@@ -22,17 +22,17 @@ describe("SmockLock", function () {
     const [ownerEthers, otherAccountEthers] = await hre.ethers.getSigners();
 
     const lockFactory = await smock.mock("Lock");
-    const lock = await lockFactory.deploy(unlockTime);
+    const fakeLock = await lockFactory.deploy(unlockTime);
 
     await hre.network.provider.send('hardhat_setBalance', [
-      lock.address,
+      fakeLock.address,
       '0x0de0b6b3a7640000',
     ]);
 
     const publicClient = await hre.viem.getPublicClient();
 
     return {
-      lock,
+      fakeLock,
       unlockTime,
       lockedAmount,
       owner,
@@ -44,25 +44,25 @@ describe("SmockLock", function () {
 
   describe("Deployment", function () {
     it("Should set the right unlockTime", async function () {
-      const { lock, unlockTime } = await loadFixture(deployOneYearLockFixture);
+      const { fakeLock, unlockTime } = await loadFixture(deployOneYearLockFixture);
 
-      expect(await lock.unlockTime()).to.equal(unlockTime);
+      expect(await fakeLock.unlockTime()).to.equal(unlockTime);
     });
 
     it("Should set the right owner", async function () {
-      const { lock, owner } = await loadFixture(deployOneYearLockFixture);
+      const { fakeLock, owner } = await loadFixture(deployOneYearLockFixture);
 
-      expect(await lock.owner()).to.equal(getAddress(owner.account.address));
+      expect(await fakeLock.owner()).to.equal(getAddress(owner.account.address));
     });
 
     it("Should receive and store the funds to lock", async function () {
-      const { lock, lockedAmount, publicClient } = await loadFixture(
+      const { fakeLock, lockedAmount, publicClient } = await loadFixture(
         deployOneYearLockFixture
       );
 
       expect(
         await publicClient.getBalance({
-          address: lock.address,
+          address: fakeLock.address,
         })
       ).to.equal(lockedAmount);
     });
@@ -81,26 +81,25 @@ describe("SmockLock", function () {
   describe("Withdrawals", function () {
     describe("Validations", function () {
       it("Should revert with the right error if called too soon", async function () {
-        const { lock, ownerEthers } = await loadFixture(deployOneYearLockFixture);
+        const { fakeLock, ownerEthers } = await loadFixture(deployOneYearLockFixture);
 
-        await expect(lock.connect(ownerEthers).withdraw()).to.be.rejectedWith(
+        await expect(fakeLock.connect(ownerEthers).withdraw()).to.be.rejectedWith(
           "You can't withdraw yet"
         );
 
       });
 
       it("Should revert with the right error if called from another account", async function () {
-        const { lock, unlockTime, otherAccount } = await loadFixture(
+        const { fakeLock, unlockTime, otherAccount } = await loadFixture(
           deployOneYearLockFixture
         );
-
         // We can increase the time in Hardhat Network
         await time.increaseTo(unlockTime);
 
         // We retrieve the contract with a different account to send a transaction
         const lockAsOtherAccount = await hre.viem.getContractAt(
           "Lock",
-          lock.address,
+          fakeLock.address,
           { walletClient: otherAccount }
         );
 
@@ -111,13 +110,13 @@ describe("SmockLock", function () {
       });
 
       it("Shouldn't fail if the unlockTime has arrived and the owner calls it", async function () {
-        const { lock, unlockTime } = await loadFixture(
+        const { fakeLock, unlockTime } = await loadFixture(
           deployOneYearLockFixture
         );
 
         const lockViem = await hre.viem.getContractAt(
           "Lock",
-          lock.address,
+          fakeLock.address,
         );
 
         // Transactions are sent using the first signer by default
@@ -129,12 +128,12 @@ describe("SmockLock", function () {
 
     describe("Events", function () {
       it("Should emit an event on withdrawals", async function () {
-        const { lock, unlockTime, lockedAmount, publicClient } =
+        const { fakeLock, unlockTime, lockedAmount, publicClient } =
           await loadFixture(deployOneYearLockFixture);
 
         const lockViem = await hre.viem.getContractAt(
           "Lock",
-          lock.address,
+          fakeLock.address,
         );
 
         await time.increaseTo(unlockTime);
@@ -149,4 +148,63 @@ describe("SmockLock", function () {
       });
     });
   });
+
+  describe("Smock With Viem", function () {
+    it("Should revert with the right error if called from another account", async function () {
+      const { fakeLock, unlockTime, otherAccount, ownerEthers } = await loadFixture(
+        deployOneYearLockFixture
+      );
+      let lockViem = await hre.viem.getContractAt(
+        "Lock",
+        fakeLock.address,
+      );
+      // Sanity check that withdraw reverts normally
+      await expect(lockViem.simulate.withdraw()).to.be.rejectedWith(
+        "You can't withdraw yet"
+      );
+
+      // Lock should always revert with you aren't owner
+      fakeLock.withdraw.reverts("You aren't the owner")
+
+      // Withdraw now revers with you aren't the owner
+      await expect(lockViem.simulate.withdraw()).to.be.rejectedWith(
+        "You aren't the owner"
+      );
+
+      // We are not the owner
+      lockViem = await hre.viem.getContractAt(
+        "Lock",
+        fakeLock.address,
+        { walletClient: otherAccount }
+      );
+
+      await expect(lockViem.write.withdraw()).to.be.rejectedWith(
+        "You aren't the owner"
+      );
+
+      // We are the owner
+      lockViem = await hre.viem.getContractAt(
+        "Lock",
+        fakeLock.address,
+      );
+
+      await expect(lockViem.write.withdraw()).to.be.rejectedWith(
+        "You aren't the owner"
+      );
+
+      // Reset mock
+      fakeLock.withdraw.reset()
+
+      // Sanity check that reverts normally
+      await expect(lockViem.simulate.withdraw()).to.be.rejectedWith(
+        "You can't withdraw yet"
+      );
+
+      // We can increase the time in Hardhat Network
+      await time.increaseTo(unlockTime);
+
+      await lockViem.write.withdraw()
+
+    });
+  })
 });
